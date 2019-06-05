@@ -1,0 +1,443 @@
+{# Use it like this where you want the button:
+
+      {% include 'checkout/_mobile-pay' %}
+	      
+<div id="payment-request-button">
+</div>
+
+Stripe allows you to style the button as well.
+
+#}
+
+
+
+{% set statesByAbbreviation = {} %}
+
+{% set statesByName = [] %}
+
+{% for state in craft.commerce.states.allStates if state.countryId == 233 %}
+
+
+ {% set statesByAbbreviation = statesByAbbreviation|merge({(state.abbreviation):(state.id) }) %}
+ {% set statesByName = statesByName|merge({(state.name):(state.id) }) %}
+ 
+ 
+
+{% endfor %}
+
+
+<script src="https://js.stripe.com/v3/"></script>
+
+	<form method="POST" id="finalize-payment">
+    <input type="hidden" name="action" value="commerce/payments/pay"/>
+        {{ redirectInput('/checkout/success?number='~cart.number) }}
+	    {{ csrfInput() }}
+	</form>
+    
+
+	{% set publishableKey = '' %}
+	{% for method in craft.commerce.gateways.allCustomerEnabledGateways %}
+		{# Replace 'method.id' value with whatever the ID of your Apple Pay/Stripe method is. This can be simplified if you only have one payment method. #}
+		{% if method.id == 2 %}
+			{% set publishableKey = method.settings.publishableKey %}
+
+		{% endif %}
+	{% endfor %}
+  
+  
+ <script>
+
+
+function parseName(fullName) {
+var parts = fullName.toString().split(/\s+/);
+var name = Object();
+name.firstName = parts.slice(0, -1).join(" ");
+name.lastName = parts.pop();
+
+return name;
+}
+	    
+
+var stripe = Stripe('{{ publishableKey }}');
+
+var paymentRequest = stripe.paymentRequest({
+  country: 'US',
+  currency: 'usd',
+  total: {
+    label: '{{ siteName }}',
+    amount: {{ cart.totalPrice|round(2) * 100 }},
+  },
+    requestShipping: true,
+  requestPayerName: true,
+  requestPayerEmail: true,
+    requestPayerPhone: true,
+
+});
+
+var elements = stripe.elements();
+var prButton = elements.create('paymentRequestButton', {
+  paymentRequest: paymentRequest,
+});
+
+// Check the availability of the Payment Request API first.
+paymentRequest.canMakePayment().then(function(result) {
+  if (result) {
+    prButton.mount('#payment-request-button');
+
+	// if you need to show or do anything else here to make the button work.
+	// we show a special - OR -  to separate mobile pay from the rest of the checkout similar to Shopify
+		
+	//$("#or-hr-seperator").css("display", "block");
+
+  } else {
+    document.getElementById('payment-request-button').style.display = 'none';
+
+  }
+});
+
+
+
+// complete payment
+
+paymentRequest.on('token', function(ev) {
+  // Send the token to your server to charge it!
+  
+  
+      //console.log(ev);
+		    var statesByName = {{ statesByName|json_encode|raw}}
+			var statesByAbbr = {{ statesByAbbreviation|json_encode|raw}}
+			
+		
+
+
+		      // Map result fields to Craft fields		      
+		      var theState = ev.shippingAddress.region;
+		      if (theState.length == 2) {		     
+		       var stateId = statesByAbbr[theState];
+		      } else {
+		     	var stateId = statesByName[theState];
+		      }
+		      
+		      // setup the JSON
+			  
+			  var payerName = window.parseName(ev.payerName);
+			  
+			  //console.log(payerName);
+			  			  
+				var contactUpdate = [
+					
+				  { name:  "{{ craft.app.config.general.csrfTokenName|e('js') }}",
+					value: "{{ craft.app.request.csrfToken|e('js') }}"
+					  
+					  
+				   },
+				  {
+				    name: "action",
+				    value: "commerce/cart/update-cart"
+				  },
+				  				 				  
+				  
+				      {
+				    name: "email",
+				    value: ev.payerEmail
+				  },  
+				
+				    {
+				    name: "orderNumber",
+				    value: "{{ cart.number }}"
+				  },  
+				  
+				  {
+				    name: "billingAddressSameAsShipping",
+				    value: "1"
+				  },
+				    {
+				    name: "gatewayId",
+				    value: "2"
+				  },
+				  
+				  	    {
+				    name: "paymentMethod",
+				    value: "2"
+				  },
+				  
+				    {
+				    name: "shippingAddress[firstName]",
+				    value: payerName.firstName
+				  },
+				  {
+				    name: "shippingAddress[lastName]",
+				    value: payerName.lastName
+				    
+				  },
+				  
+
+				  {
+				    name: "shippingAddress[address1]",
+				    value: ev.shippingAddress.addressLine[0]
+				  },
+				  {
+				    name: "shippingAddress[address2]",
+				    value: ev.shippingAddress.addressLine[1]
+				  },
+				  
+
+				  {
+				    name: "shippingAddress[city]",
+				    value: ev.shippingAddress.city
+				  },
+				  {
+				    name: "shippingAddress[stateValue]",
+				    value: stateId
+				  },
+				  {
+				    name: "shippingAddress[zipCode]",
+				    value: ev.shippingAddress.postalCode
+				  },
+				  
+				 
+				   {
+				    name: "shippingAddress[phone]",
+				    value: ev.payerPhone
+				  },
+				  
+				  {
+				    name: "shippingAddress[countryId]",
+				    value: "233"
+				  }				
+				];
+
+				var stripeToken =  ev.token.id;
+
+
+   
+    $.ajax({
+        type: 'post',
+        url: '',
+        data: contactUpdate,
+        dataType: 'json',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        success: function(response) {
+            if (response.success) {
+
+				//console.log('updated! Trying payment...');				
+			
+			// cart was updated, now make the payment
+				
+				
+			  $('#finalize-payment').append($('<input type="hidden" name="email">').val(ev.payerEmail));
+			  $('#finalize-payment').append($('<input type="hidden" name="orderNumber">').val('{{ cart.number }}'));
+			  $('#finalize-payment').append($('<input type="hidden" name="gatewayId">').val(2));
+			  $('#finalize-payment').append($('<input type="hidden" name="stripeToken">').val(stripeToken));
+
+				  
+				  
+				  
+				  // make the payment
+
+					      ev.complete('success');
+					      
+					      $('#finalize-payment').submit();
+
+
+			
+		} else {
+		      ev.complete('fail');
+
+
+		}
+	}
+	});
+				  
+				  
+});
+
+
+
+paymentRequest.on('shippingaddresschange', function(ev) {
+  if (ev.shippingAddress.country !== 'US') {
+    ev.updateWith({status: 'invalid_shipping_address'});
+  } else {
+    // Perform server-side request to fetch shipping options
+    // update the cart to get the data
+    
+		    //console.log(ev);
+		    var statesByName = {{ statesByName|json_encode|raw}}
+			var statesByAbbr = {{ statesByAbbreviation|json_encode|raw}}
+			
+	        
+
+
+
+		      // Map result fields to Craft fields		      
+		      var theState = ev.shippingAddress.region;
+		      if (theState.length == 2) {		     
+		       var stateId = statesByAbbr[theState];
+		      } else {
+		     	var stateId = statesByName[theState];
+		      }
+		      
+		      // setup the JSON
+			  
+			  
+				var contactUpdate = [
+					
+				  { name:  "{{ craft.app.config.general.csrfTokenName|e('js') }}",
+					value: "{{ craft.app.request.csrfToken|e('js') }}"
+					  
+					  
+				   },
+				  {
+				    name: "action",
+				    value: "commerce/cart/update-cart"
+				  },
+				      {
+				    name: "email",
+				    value: "{{ cart.email }}"
+				  },  
+				
+				    {
+				    name: "orderNumber",
+				    value: "{{ cart.number }}"
+				  },  
+				  
+				  {
+				    name: "billingAddressSameAsShipping",
+				    value: "1"
+				  },
+				    {
+				    name: "gatewayId",
+				    value: "2"
+				  },
+				  
+				    {
+				    name: "shippingAddress[firstName]",
+				    value: 'Customer'
+				  },
+				  {
+				    name: "shippingAddress[lastName]",
+				    value: 'Last Name'
+				  },
+				  
+
+				  {
+				    name: "shippingAddress[city]",
+				    value: ev.shippingAddress.city
+				  },
+				  {
+				    name: "shippingAddress[stateValue]",
+				    value: stateId
+				  },
+				  {
+				    name: "shippingAddress[zipCode]",
+				    value: ev.shippingAddress.postalCode
+				  },
+				  
+				  /*
+				   {
+				    name: "shippingAddress[phone]",
+				    value: ev.shippingAddress.phoneNumber
+				  },
+				  
+				  */
+				  {
+				    name: "shippingAddress[countryId]",
+				    value: "233"
+				  }
+				  /*
+				  {
+				    name: "stripeToken",
+				    value: ev.token.id
+				  }*/
+				
+				];
+
+     //   console.log('updating cart');
+
+
+   // console.log(contactUpdate);
+    $.ajax({
+        type: 'post',
+        url: '',
+        data: contactUpdate,
+        dataType: 'json',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        success: function(response) {
+	        
+	        
+	     
+	    //console.log(response);
+	        
+	      var  shippingLabels =  [];
+	    
+	    {% for i in craft.commerce.shippingMethods.allShippingMethods %}
+			shippingLabels['{{i.handle }}'] = '{{ i.name }}';
+			    		
+        {% endfor %}
+
+
+
+            if (response.success) {
+				
+				//console.log(response);
+				var shippingMethod = [ {     id: response.cart.shippingMethodId,
+				   label: shippingLabels[response.cart.shippingMethod],
+				   amount: Math.round(response.cart.totalShippingCost * 100)
+				   }
+				 ]
+				 
+				 
+		      ev.updateWith({
+		        status: 'success',
+
+		           displayItems: [
+  
+      {
+        label: 'Item Subtotal',
+        amount: Math.round(response.cart.itemSubtotal * 100)
+      },
+      
+        {
+        label: 'Shipping',
+        amount: Math.round(response.cart.totalShippingCost * 100)
+      },
+  
+      {
+        label: 'Taxes',
+        amount: Math.round(response.cart.totalTax * 100)
+      },
+
+    ],
+
+		   	  total: {
+		      label: '{{ siteName }}',
+		      amount: Math.round(response.cart.totalPrice * 100)
+		    },
+
+		        shippingOptions: shippingMethod
+		      });
+
+          } else {
+	          //console.log(repsonse);
+          }
+          
+          
+          
+     }
+     
+     });
+
+
+  }     
+  
+       });
+          
+        
+   
+   
+
+
+
+</script>
+			  
+			 			  
